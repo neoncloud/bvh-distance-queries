@@ -44,7 +44,7 @@ class BVHFunction(autograd.Function):
             queue_size=BVHFunction.QUEUE_SIZE,
             sort_points_by_morton=BVHFunction.SORT_POINTS_BY_MORTON,
         )
-        ctx.save_for_backward(triangles, *outputs)
+        ctx.save_for_backward(triangles, points, *outputs[1:]) # dont save distance
         return outputs[0], outputs[1], outputs[2], outputs[3]
 
     @staticmethod
