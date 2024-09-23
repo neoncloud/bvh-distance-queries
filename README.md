@@ -1,3 +1,7 @@
+# About this fork
+
+This fork implements backward method of `BVHFunction`. You can use this to minimize the Point-to-Face distance. The Face-to-Point distance is also implemented. You may combine this two to achieve a Point-to-Mesh distance loss similar to this [Pytorch3D's Implementation](https://pytorch3d.readthedocs.io/en/latest/modules/loss.html#pytorch3d.loss.point_mesh_face_distance).
+
 # Point to Mesh distance computation
 
 This package provides a PyTorch module that performs point to surface queries
