@@ -48,8 +48,47 @@ class BVHFunction(autograd.Function):
         return outputs[0], outputs[1], outputs[2], outputs[3]
 
     @staticmethod
-    def backward(ctx, grad_output, *args, **kwargs):
-        raise NotImplementedError
+    def backward(ctx, grad_distances, grad_closest_points, grad_closest_faces, grad_closest_bcs):
+        # Retrieve saved tensors
+        triangles, points, closest_points, closest_faces, closest_bcs = ctx.saved_tensors
+
+        # Compute gradient with respect to points
+        grad_points = grad_distances.unsqueeze(-1) * 2 * (points - closest_points)
+        if grad_closest_points is not None:
+            grad_points += grad_closest_points
+
+        # Compute total gradient for closest_points
+        grad_closest_points_from_distances = grad_distances.unsqueeze(-1) * (-2) * (points - closest_points)
+        total_grad_closest_points = grad_closest_points_from_distances
+        if grad_closest_points is not None:
+            total_grad_closest_points += grad_closest_points
+
+        # Compute gradient with respect to the closest triangles
+        grad_closest_triangles = total_grad_closest_points.unsqueeze(-2) * closest_bcs.unsqueeze(-1)  # (B, Q, 3, 3)
+
+        # Identify the closest triangles
+        batch_size, num_triangles, _, _ = triangles.shape
+        _, num_queries = closest_faces.shape
+
+        # Compute global indices for scattering
+        batch_indices = torch.arange(batch_size, device=triangles.device).unsqueeze(1).expand(-1, num_queries).reshape(-1)
+        face_indices = closest_faces.reshape(-1)
+        global_face_indices = batch_indices * num_triangles + face_indices
+
+        # Flatten gradients for scattering
+        grad_closest_triangles_flat = grad_closest_triangles.reshape(-1, 3, 3)
+
+        # Initialize gradient tensor for triangles
+        grad_triangles_flat = torch.zeros((batch_size * num_triangles, 3, 3), device=triangles.device, dtype=triangles.dtype)
+
+        # Scatter-add gradients to the corresponding triangles
+        grad_triangles_flat.index_add_(0, global_face_indices, grad_closest_triangles_flat)
+
+        # Reshape the gradient tensor back to the original shape
+        grad_triangles = grad_triangles_flat.view(batch_size, num_triangles, 3, 3)
+
+        # Return gradients with respect to inputs
+        return grad_triangles, grad_points
 
 
 class BVH(nn.Module):

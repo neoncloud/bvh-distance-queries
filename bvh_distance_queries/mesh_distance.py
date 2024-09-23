@@ -132,3 +132,97 @@ class PointToMeshResidual(nn.Module):
         closest_idx = torch.gather(closest_fids, 2, closest_bcs.max(2)[1].unsqueeze(-1)).squeeze(-1)
         
         return residual, closest_normals, closest_cmaps, closest_idx
+
+
+
+class PointToMeshFaceDistance(nn.Module):
+
+    def __init__(self,
+                 sort_points_by_morton: bool = True,
+                 queue_size: int = 128) -> None:
+        ''' Constructor for the point to mesh face distance loss module, which is similar to Pytorch3D's implementation: https://pytorch3d.readthedocs.io/en/latest/modules/loss.html#pytorch3d.loss.point_mesh_face_distance
+
+            Parameters
+            ----------
+                sort_points_by_morton: bool, optional
+                    Sort input points by their morton code. Helps improve query
+                    speed. Default is true
+                queue_size: int, optional
+                    The size of the data structure used to store intermediate
+                    distance computations
+        '''
+        super(PointToMeshResidual, self).__init__()
+        self.search_tree = BVH(sort_points_by_morton=sort_points_by_morton,
+                               queue_size=queue_size)
+
+    def face2point(self, triangles: torch.Tensor, distances: torch.Tensor, closest_faces: torch.Tensor) -> torch.Tensor:
+        """
+        Computes the squared distance of each triangular face in mesh to the closest
+        point in pcd and averages across all faces in mesh.
+
+        Returns
+        -------
+        avg_distance : Tensor
+            A scalar tensor representing the average squared distance.
+        """
+
+        B, F, _, _ = triangles.shape
+        B, N = distances.shape
+
+        # Prepare for scatter operation
+        batch_indices = torch.arange(B, device=triangles.device).unsqueeze(1).expand(-1, N)  # (B, N)
+        # Compute global face indices
+        global_face_indices = batch_indices * F + closest_faces  # (B, N)
+
+        # Flattened distances and face indices
+        flat_distances = distances.view(-1)  # (B*N,)
+        flat_face_indices = global_face_indices.view(-1)  # (B*N,)
+
+        # Total number of faces across all batches
+        total_faces = B * F
+
+        # Initialize min_distances with infinity
+        min_distances = torch.full((total_faces,), float('inf'), device=triangles.device)
+
+        # Use scatter_reduce to compute minimal distances per face
+        min_distances = min_distances.scatter_reduce_(0, flat_face_indices, flat_distances, reduce='amin')
+
+        # Reshape back to (B, F)
+        face_min_distances = min_distances.view(B, F)
+
+        # Replace inf values with zeros (for faces that had no points mapped to them)
+        face_min_distances = torch.where(face_min_distances == float('inf'), 0, face_min_distances)
+        
+        # return face_min_distances
+
+        # Average across all faces
+        avg_distance = face_min_distances.mean()
+        return avg_distance
+
+    def forward(self,
+                triangles: Tensor,
+                points: Tensor,
+                faces: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+        ''' Forward pass of the search tree
+
+            Parameters
+            ----------
+                triangles: torch.tensor
+                    A BxFx3x3 PyTorch tensor that contains the triangle
+                    locations.
+                points: torch.tensor
+                    A BxQx3 PyTorch tensor that contains the query point
+                    locations.
+                faces: torch.tensor
+                    A BxFx3 PyTorch tensor that contains the face
+                    vectors
+            Returns
+            -------
+                residuals: torch.tensor
+                    A BxQx3 tensor with the vector that points from the query
+                    to the closest point
+        '''
+        output = self.search_tree(triangles, points)
+        distances, closest_points, closest_faces, _ = output
+        face_point_dist = self.face2point(triangles, distances, closest_faces)
+        return face_point_dist+distances.mean()
